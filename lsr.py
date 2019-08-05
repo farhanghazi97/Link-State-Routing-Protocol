@@ -290,14 +290,14 @@ class ReceiveThread(Thread):
     # Uses the global graph to construct a adjacency list
     # (represented using python 'dict') which in turn is
     # used by the Dijkstra function to compute shortest paths
-    def organizeGraph(self, graph):
+    def organizeGraph(self, graph_arg):
 
         # Set to contain nodes within graph
         nodes = set()
 
         # Determine nodes in entire topology
         # and update set of nodes
-        for node in graph:
+        for node in graph_arg:
             if node[0] not in nodes:
                 nodes.add(node[0])
             if node[1] not in nodes:
@@ -316,7 +316,7 @@ class ReceiveThread(Thread):
         # from all nodes, create the initial adjacency list
         # based solely on data received from neighbours
         for node in sorted_nodes:
-            for link in graph:
+            for link in graph_arg:
                 if node == link[0]:
                     new_LL[node].update({link[1] : link[2]})
 
