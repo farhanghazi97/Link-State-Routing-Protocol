@@ -44,7 +44,7 @@ class ReceiveThread(Thread):
         server_name = 'localhost'
         server_port = int(self.router_data['Port'])
         self.server_socket.bind((server_name, server_port))
-        inactive_list_size = len(self.inactive_list)
+        # inactive_list_size = len(self.inactive_list)
 
         while True:
 
@@ -71,7 +71,7 @@ class ReceiveThread(Thread):
 
                 # If the list of inactive routers is ever updated, we must transmit
                 # a new LSA to notify other routers of the update to the topology
-                if len(self.inactive_list) > inactive_list_size:
+                if len(self.inactive_list) > 0:
 
                     # Update this router's list of neighbours using inactive list
                     self.updateNeighboursList()
@@ -83,9 +83,6 @@ class ReceiveThread(Thread):
                     # Clear the set so that the fresh set
                     # will only track active neighbours
                     self.HB_set.clear()
-
-                    # Store new size of inactive list
-                    inactive_list_size = len(self.inactive_list)
 
             # Handle case if the message received is an LSA
             else:
@@ -139,6 +136,9 @@ class ReceiveThread(Thread):
                         )
                         time.sleep(1)
                     else:
+                        if local_copy_LSA['DEAD']:
+                            self.updateLSADB(local_copy_LSA['DEAD'])
+                            self.updateGraphOnly(graph, local_copy_LSA['DEAD'])
                         # If old data is being received, that is, there is no new LSA, we simply forward the message
                         # onto our neighbours (now with the list of updated neighbours and higher SN)
                         for new_router in self.router_data['Neighbours Data']:
@@ -224,6 +224,9 @@ class ReceiveThread(Thread):
             self.server_socket.sendto(new_data , (server_name , int(router['Port'])))
         time.sleep(1)
 
+        # Empty the inactive list so that it can be again populated with new nodes
+        # should they fail (THIS LIST CAN AT MOST HAVE ONLY ONE ELEMENT)
+        self.inactive_list.clear()
 
     def updateGraphAfterFailure(self, *args):
 
