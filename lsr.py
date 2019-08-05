@@ -3,9 +3,9 @@ import pickle
 import time
 import heapq
 
-from datetime  import datetime , timedelta
-from threading import Thread , Lock , Timer
-from socket    import socket , AF_INET , SOCK_DGRAM
+from datetime import datetime, timedelta
+from threading import Thread, Lock, Timer
+from socket import socket, AF_INET, SOCK_DGRAM
 
 UPDATE_INTERVAL = 1
 ROUTE_UPDATE_INTERVAL = 30
@@ -31,7 +31,10 @@ class ReceiveThread(Thread):
         self.serverSide()
 
     def __str__(self):
-        return "I am Router {0} with PORT {1} - READY TO RECEIVE".format(self.router_data['RID'] , self.router_data['Port'])
+        return "I am Router {0} with PORT {1} - READY TO RECEIVE".format(
+            self.router_data['RID'],
+            self.router_data['Port']
+        )
 
     def __del__(self):
         self.server_socket.close()
@@ -45,6 +48,7 @@ class ReceiveThread(Thread):
 
         while True:
 
+            # Socket ready to receive!
             data, client_address = self.server_socket.recvfrom(1024)
             local_copy_LSA = pickle.loads(data)
 
@@ -65,9 +69,10 @@ class ReceiveThread(Thread):
                 # inactive list of routers
                 Timer(NODE_FAILURE_INTERVAL , self.checkForNodeFailure).start()
 
+                # If the list of inactive routers is ever updated, we must transmit
+                # a new LSA to notify other routers of the update to the topology
                 if len(self.inactive_list) > inactive_list_size:
 
-                    print("NEED TO UPDATE NEIGHBOURS")
                     # Update this router's list of neighbours using inactive list
                     self.updateNeighboursList()
 
@@ -85,43 +90,97 @@ class ReceiveThread(Thread):
             # Handle case if the message received is an LSA
             else:
 
+                # Grab list of neighbouring routers of router that sent this LSA
                 neighbour_routers = self.router_data['Neighbours Data']
+
+                # Grab 'FLAG' field from LSA received
                 flag = local_copy_LSA['FLAG']
 
+                # Append this router's ID to LSA_SN database
+                self.LSA_SN.update({self.router_data['RID'] : 0})
+
+                # Any new LSA received that have not been seen before are stored within this
+                # routers local link-state database
                 if local_copy_LSA['RID'] not in self.packets:
                     for router in neighbour_routers:
                         if router['NID'] != local_copy_LSA['RID']:
                             self.packets.add(local_copy_LSA['RID'])
-                            self.LSA_SN.update({local_copy_LSA['RID'] : local_copy_LSA['SN']})
+                            self.LSA_SN.update({local_copy_LSA['RID']: local_copy_LSA['SN']})
                             self.LSA_DB.update({local_copy_LSA['RID'] : local_copy_LSA})
                             # If the LSA received does not exist within router database , forward it to neighbours
                             # If LSA exists within database, do not forward it (silently drop it)
-                            # print("<<< I forwarded LSA from ROUTER {0} to ROUTER {1} >>>".format(local_copy_LSA['RID'] , router['NID']))
-                            self.server_socket.sendto(pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]), (server_name, int(router['Port'])))
+                            self.server_socket.sendto(
+                                pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
+                                (server_name, int(router['Port']))
+                            )
                             time.sleep(1)
-                    self.updateGraph(graph, self.inactive_list, self.LSA_DB, 0, self.thread_lock)
+                    # Update global graph using constructed link-state database
+                    self.updateGraph(graph, self.LSA_DB, 0)
 
                 # If a router is removed from the topology, we receive an updated LSA
                 # which we use to update the graph network.
+                # (ALL UPDATED LSA HAVE A UNIQUE 'FLAG' WITH VALUE 1 TO IDENTIFY THEM)
                 if flag is 1:
-                    print("A FRESH NEW LSA HAS BEEN RECEIVED FROM {0}".format(local_copy_LSA['RID']))
                     # If the LSA received has a SN number that is greater than the existing record of
                     # SN for that router, we can confirm that the LSA received is a fresh LSA
-                    if  local_copy_LSA['SN'] > self.LSA_SN[local_copy_LSA['RID']]:
-                        print("LSA OF {0} HAS BEEN UPDATED".format(local_copy_LSA['RID']))
+                    if local_copy_LSA['SN'] > self.LSA_SN[local_copy_LSA['RID']]:
                         self.LSA_SN.update({local_copy_LSA['RID'] : local_copy_LSA['SN']})
                         self.LSA_DB.update({local_copy_LSA['RID'] : local_copy_LSA})
-                        self.server_socket.sendto(pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]), (server_name, int(local_copy_LSA['Port'])))
+                        # If the new LSA has any router listed as inactive (i.e dead) we remove these explicitly from
+                        # the topology so that they are excluded from future shortest path calculations
+                        if local_copy_LSA['DEAD']:
+                            self.updateLSADB(local_copy_LSA['DEAD'])
+                            self.updateGraphOnly(graph, local_copy_LSA['DEAD'])
+                        # Send the new LSA received back to the sending router (so as to ensure that it is a two-way
+                        # update for the sender and recipient's local database)
+                        self.server_socket.sendto(
+                            pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
+                            (server_name, int(local_copy_LSA['Port']))
+                        )
                         time.sleep(1)
                     else:
-                        for new_router in local_copy_LSA['Neighbours Data']:
-                            if new_router['NID'] != local_copy_LSA['RID']:
-                                #print("SENT NEW LSA TO {0}".format(new_router['NID']))
-                                self.server_socket.sendto(pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]), (server_name, int(new_router['Port'])))
+                        # If old data is being received, that is, there is no new LSA, we simply forward the message
+                        # onto our neighbours (now with the list of updated neighbours and higher SN)
+                        for new_router in self.router_data['Neighbours Data']:
+                            if new_router['NID'] != self.router_data['RID']:
+                                try:
+                                    self.server_socket.sendto(
+                                        pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
+                                        (server_name, int(new_router['Port']))
+                                    )
+                                except KeyError:
+                                    pass
                             time.sleep(1)
-                    Timer(10 , self.updateGraphAfterFailure , [graph, self.inactive_list, self.LSA_DB , 1, self.thread_lock]).start()
+                    # After getting a fresh LSA, we wait for sometime (so that the global graph can update) and then
+                    # recompute shortest paths using Dijkstra algorithm
+                    Timer(10, self.updateGraphAfterFailure, [
+                        graph,
+                        self.inactive_list,
+                        self.LSA_DB,
+                        1,
+                        self.thread_lock]
+                    ).start()
 
+    # Helper function to update the global graph when a router
+    # in the topology fails
+    def updateGraphOnly(self, graph_arg, dead_list):
 
+        for node in graph_arg:
+            if node[0] in dead_list:
+                graph_arg.remove(node)
+            if node[1] in dead_list:
+                graph_arg.remove(node)
+
+    # Update this router's local link-state database
+    # after a router fails
+    def updateLSADB(self, lsa_db):
+
+        for node in lsa_db:
+            if node in self.LSA_DB:
+                del self.LSA_DB[node]
+
+    # Period function that runs in the HeartBeat Thread
+    # Used to check for any failed nodes in the topology
     def checkForNodeFailure(self):
 
         current_time = datetime.now()
@@ -133,12 +192,16 @@ class ReceiveThread(Thread):
                 if node not in self.inactive_list:
                     self.inactive_list.add(node)
 
+    # Helper function to update this router's list
+    # of active neighbours after a router fails
     def updateNeighboursList(self):
 
         for node in self.router_data['Neighbours Data']:
             if node['NID'] in self.inactive_list:
                 self.router_data['Neighbours Data'].remove(node)
 
+    # Triggered by all active neighbouring routers
+    # when a neighbour to them fails
     def transmitNewLSA(self):
 
         server_name = 'localhost'
@@ -146,22 +209,23 @@ class ReceiveThread(Thread):
 
         updated_router_information['RID'] = self.router_data['RID']
         updated_router_information['Port'] = self.router_data['Port']
-        updated_router_information['Neighbours'] = self.router_data['Neighbours']
+        updated_router_information['Neighbours'] = self.router_data['Neighbours'] - 1
         updated_router_information['Neighbours Data'] = self.router_data['Neighbours Data']
 
-        new_SN = int(self.router_data['SN']) + 1
-        updated_router_information['SN'] = new_SN
+        self.router_data['SN'] = self.router_data['SN'] + 1
+        updated_router_information['SN'] = self.router_data['SN']
 
         updated_router_information['FLAG'] = 1
+        updated_router_information['DEAD'] = self.inactive_list
 
         new_data = pickle.dumps(updated_router_information)
 
         for router in self.router_data['Neighbours Data']:
-            print("TRANSMITTING NEW LSA TO {0}".format(router['NID']))
             self.server_socket.sendto(new_data , (server_name , int(router['Port'])))
         time.sleep(1)
 
-    def updateGraphAfterFailure(self , *args):
+
+    def updateGraphAfterFailure(self, *args):
 
         if args[3] is 1:
             try:
@@ -173,43 +237,49 @@ class ReceiveThread(Thread):
 
         for node in args[0]:
             if node[0] in args[1]:
-                print("REMOVED {0} FROM GRAPH!".format(node))
                 args[0].remove(node)
             if node[1] in args[1]:
-                print("REMOVED NODE {0} FROM GRAPH".format(node))
                 args[0].remove(node)
 
-        # Get adjacency list and list of graph nodes
-        adjacency_list, graph_nodes = self.organizeGraph(args[0])
+        for node in args[2]:
+            for router in args[2][node]['Neighbours Data']:
+                if router['NID'] in args[1]:
+                    args[2][node]['Neighbours Data'].remove(router)
 
-        # Run Dijkstra's algorithm periodically
-        Timer(ROUTE_UPDATE_INTERVAL, self.runDijkstra, [adjacency_list, graph_nodes]).start()
+        self.updateGraph(args[0], args[2], 1)
 
-    def updateGraph(self , graph_arg, inactive_list , lsa_data, flag , lock):
+    # Helper function that builds a useful data structure
+    # that will in turn be used by another helper function
+    # to construct an adjacency list from the global graph.
+    # The adjacency list is then in turn used by the
+    # Dijkstra function to compute shortest path
+    def updateGraph(self, graph_arg, lsa_data, flag):
 
-        if flag is 0:
+        if flag is 1:
 
-            for node in lsa_data:
+            graph.clear()
 
-                source_node = lsa_data[node]['RID']
-                neighbours_dict = lsa_data[node]['Neighbours Data']
-                neighbours_list = []
+        for node in lsa_data:
 
-                for neighbour in neighbours_dict:
-                    if (source_node < neighbour['NID']):
-                        graph_data = [source_node, neighbour['NID'], neighbour['Cost'], neighbour['Port']]
-                    else:
-                        graph_data = [neighbour['NID'], source_node, neighbour['Cost'], neighbour['Port']]
-                    neighbours_list.append(graph_data)
+            source_node = lsa_data[node]['RID']
+            neighbours_dict = lsa_data[node]['Neighbours Data']
+            neighbours_list = []
 
-                for node in neighbours_list:
-                    exists = False
-                    for graph_node in graph_arg:
-                        if node[0] == graph_node[0] and node[1] == graph_node[1]:
-                            exists = True
-                            break
-                    if exists is False:
-                        graph_arg.append(node)
+            for neighbour in neighbours_dict:
+                if (source_node < neighbour['NID']):
+                    graph_data = [source_node, neighbour['NID'], neighbour['Cost'], neighbour['Port']]
+                else:
+                    graph_data = [neighbour['NID'], source_node, neighbour['Cost'], neighbour['Port']]
+                neighbours_list.append(graph_data)
+
+            for node in neighbours_list:
+                exists = False
+                for graph_node in graph_arg:
+                    if node[0] == graph_node[0] and node[1] == graph_node[1]:
+                        exists = True
+                        break
+                if exists is False:
+                    graph_arg.append(node)
 
         # Get adjacency list and list of graph nodes
         adjacency_list , graph_nodes = self.organizeGraph(graph_arg)
@@ -217,7 +287,10 @@ class ReceiveThread(Thread):
         # Run Dijkstra's algorithm periodically
         Timer(ROUTE_UPDATE_INTERVAL, self.runDijkstra, [adjacency_list, graph_nodes]).start()
 
-    def organizeGraph(self , graph):
+    # Uses the global graph to construct a adjacency list
+    # (represented using python 'dict') which in turn is
+    # used by the Dijkstra function to compute shortest paths
+    def organizeGraph(self, graph):
 
         # Set to contain nodes within graph
         nodes = set()
@@ -257,10 +330,10 @@ class ReceiveThread(Thread):
         # to use for Dijkstra Computation
         return (new_LL , sorted_nodes)
 
-    def runDijkstra(self , *args):
-
-        print("<<<<<   RUNNING DIJKSTRA   >>>>>")
-        print("GRAPH NODES : {0}".format(args[1]))
+    # Runs Dijkstra's algorithm on the given adjacency list
+    # and prints out the shortest paths. Makes use of
+    # python's heapq
+    def runDijkstra(self, *args):
 
         # Use each router ID as start vertex for algorithm
         start_vertex = self.router_data['RID']
@@ -309,7 +382,7 @@ class ReceiveThread(Thread):
         # Display final output after Dijkstra computation
         self.showPaths(final_paths , distances , self.router_data['RID'])
 
-    def showPaths(path, graph_nodes , distances , source_node):
+    def showPaths(path, graph_nodes, distances, source_node):
 
         # Delete source node from list of paths
         del distances[source_node]
@@ -320,7 +393,11 @@ class ReceiveThread(Thread):
         index = 0
         # Display output for dijkstra
         for vertex in distances:
-            print("Least cost path to router {0}:{1} and the cost is {2}".format(vertex , graph_nodes[index] , distances[vertex]))
+            print("Least cost path to router {0}:{1} and the cost is {2}".format(
+                vertex,
+                graph_nodes[index],
+                distances[vertex])
+            )
             index = index + 1
         print()
 
@@ -355,7 +432,7 @@ class SendThread(Thread):
 
 class HeartBeatThread(Thread):
 
-    def __init__(self ,name , HB_message , neighbours , thread_lock):
+    def __init__(self, name, HB_message, neighbours, thread_lock):
         Thread.__init__(self)
         self.name = name
         self.HB_message = HB_message
@@ -436,11 +513,11 @@ if __name__ == "__main__":
     threadLock = Lock()
 
     # Create heart beat message to transmit
-    HB_message = [{'RID' : router_information['RID']} , {'O_Counter' : 'ALIVE'}]
+    HB_message = [{'RID' : router_information['RID']}]
 
-    sender_thread = SendThread("SENDER", router_information , threadLock)
-    receiver_thread = ReceiveThread("RECEIVER", router_information , threadLock)
-    heartbeat_thread = HeartBeatThread("HEART BEAT", HB_message , router_information['Neighbours Data'] , threadLock)
+    sender_thread = SendThread("SENDER", router_information, threadLock)
+    receiver_thread = ReceiveThread("RECEIVER", router_information, threadLock)
+    heartbeat_thread = HeartBeatThread("HEART BEAT", HB_message, router_information['Neighbours Data'], threadLock)
 
     # Start each thread
     sender_thread.start()
