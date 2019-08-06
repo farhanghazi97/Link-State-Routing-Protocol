@@ -429,7 +429,6 @@ class SendThread(Thread):
 
         while True:
             for dict in self.router_data['Neighbours Data']:
-                #print("I am sending my LSA to router {0}".format(dict['NID']))
                 self.client_socket.sendto(message, (server_name, int(dict['Port'])))
             time.sleep(UPDATE_INTERVAL)
 
