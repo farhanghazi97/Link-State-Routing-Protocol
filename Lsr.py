@@ -87,6 +87,7 @@ class ReceiveThread(Thread):
                     # will only track active neighbours
                     self.HB_set.clear()
 
+                    # Update size of inactive list
                     inactive_list_size = len(self.inactive_list)
 
             # Handle case if the message received is an LSA
@@ -121,7 +122,9 @@ class ReceiveThread(Thread):
 
                 # If a router is removed from the topology, we receive an updated LSA
                 # which we use to update the graph network.
+                
                 # (ALL UPDATED LSA HAVE A UNIQUE 'FLAG' WITH VALUE 1 TO IDENTIFY THEM)
+                
                 if flag is 1:
                     # If the LSA received has a SN number that is greater than the existing record of
                     # SN for that router, we can confirm that the LSA received is a fresh LSA
@@ -130,7 +133,7 @@ class ReceiveThread(Thread):
                         self.LSA_DB.update({local_copy_LSA['RID'] : local_copy_LSA})
                         # If the new LSA has any router listed as inactive (i.e dead) we remove these explicitly from
                         # the topology so that they are excluded from future shortest path calculations
-                        if local_copy_LSA['DEAD']:
+                        if len(local_copy_LSA['DEAD']) > 0:
                             self.updateLSADB(local_copy_LSA['DEAD'])
                             self.updateGraphOnly(graph, local_copy_LSA['DEAD'])
                         # Send the new LSA received back to the sending router (so as to ensure that it is a two-way
@@ -141,20 +144,15 @@ class ReceiveThread(Thread):
                         )
                         time.sleep(1)
                     else:
-                        if local_copy_LSA['DEAD']:
-                            self.updateLSADB(local_copy_LSA['DEAD'])
-                            self.updateGraphOnly(graph, local_copy_LSA['DEAD'])
                         # If old data is being received, that is, there is no new LSA, we simply forward the message
                         # onto our neighbours (now with the list of updated neighbours and higher SN)
                         for new_router in self.router_data['Neighbours Data']:
                             if new_router['NID'] != self.router_data['RID']:
                                 try:
-                                    if local_copy_LSA['RID'] not in self.forward_set:
-                                        self.server_socket.sendto(
-                                            pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
-                                            (server_name, int(new_router['Port']))
-                                        )
-                                        self.forward_set.add(local_copy_LSA['RID'])
+                                    self.server_socket.sendto(
+                                        pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
+                                        (server_name, int(new_router['Port']))
+                                    )
                                 except KeyError:
                                     pass
                             time.sleep(1)
@@ -546,3 +544,4 @@ if __name__ == "__main__":
         print(graph)
 
     print("Exiting Main Thread")
+    
