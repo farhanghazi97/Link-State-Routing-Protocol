@@ -26,6 +26,7 @@ class ReceiveThread(Thread):
         self.HB_set = {}
         self.LSA_DB = {}
         self.inactive_list = set()
+        self.forward_set = set()
 
     def run(self):
         self.serverSide()
@@ -44,7 +45,7 @@ class ReceiveThread(Thread):
         server_name = 'localhost'
         server_port = int(self.router_data['Port'])
         self.server_socket.bind((server_name, server_port))
-        # inactive_list_size = len(self.inactive_list)
+        inactive_list_size = len(self.inactive_list)
 
         while True:
 
@@ -67,11 +68,13 @@ class ReceiveThread(Thread):
 
                 # Periodically check for any dead neighbours and update
                 # inactive list of routers
-                Timer(NODE_FAILURE_INTERVAL , self.checkForNodeFailure).start()
+                Timer(NODE_FAILURE_INTERVAL, self.checkForNodeFailure).start()
 
                 # If the list of inactive routers is ever updated, we must transmit
                 # a new LSA to notify other routers of the update to the topology
-                if len(self.inactive_list) > 0:
+                if len(self.inactive_list) > inactive_list_size:
+
+                    #print("UPDATING NEIGHBOURS")
 
                     # Update this router's list of neighbours using inactive list
                     self.updateNeighboursList()
@@ -83,6 +86,8 @@ class ReceiveThread(Thread):
                     # Clear the set so that the fresh set
                     # will only track active neighbours
                     self.HB_set.clear()
+
+                    inactive_list_size = len(self.inactive_list)
 
             # Handle case if the message received is an LSA
             else:
@@ -144,10 +149,12 @@ class ReceiveThread(Thread):
                         for new_router in self.router_data['Neighbours Data']:
                             if new_router['NID'] != self.router_data['RID']:
                                 try:
-                                    self.server_socket.sendto(
-                                        pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
-                                        (server_name, int(new_router['Port']))
-                                    )
+                                    if local_copy_LSA['RID'] not in self.forward_set:
+                                        self.server_socket.sendto(
+                                            pickle.dumps(self.LSA_DB[local_copy_LSA['RID']]),
+                                            (server_name, int(new_router['Port']))
+                                        )
+                                        self.forward_set.add(local_copy_LSA['RID'])
                                 except KeyError:
                                     pass
                             time.sleep(1)
@@ -209,7 +216,10 @@ class ReceiveThread(Thread):
 
         updated_router_information['RID'] = self.router_data['RID']
         updated_router_information['Port'] = self.router_data['Port']
-        updated_router_information['Neighbours'] = self.router_data['Neighbours'] - 1
+
+        self.router_data['Neighbours'] = self.router_data['Neighbours'] - 1
+
+        updated_router_information['Neighbours'] = self.router_data['Neighbours']
         updated_router_information['Neighbours Data'] = self.router_data['Neighbours Data']
 
         self.router_data['SN'] = self.router_data['SN'] + 1
@@ -221,12 +231,9 @@ class ReceiveThread(Thread):
         new_data = pickle.dumps(updated_router_information)
 
         for router in self.router_data['Neighbours Data']:
+            #print("SENT THIS NEW LSA TO {0}".format(router['NID']))
             self.server_socket.sendto(new_data , (server_name , int(router['Port'])))
         time.sleep(1)
-
-        # Empty the inactive list so that it can be again populated with new nodes
-        # should they fail (THIS LIST CAN AT MOST HAVE ONLY ONE ELEMENT)
-        self.inactive_list.clear()
 
     def updateGraphAfterFailure(self, *args):
 
